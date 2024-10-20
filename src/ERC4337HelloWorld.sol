@@ -9,9 +9,12 @@ import { ECDSA } from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import {SIG_VALIDATION_FAILED, SIG_VALIDATION_SUCCESS} from "lib/account-abstraction/contracts/core/Helpers.sol"; 
 import { IEntryPoint } from "lib/account-abstraction/contracts/interfaces/IEntryPoint.sol"; 
 import { INonceManager } from "lib/account-abstraction/contracts/interfaces/INonceManager.sol"; 
+import { IPaymaster } from "lib/account-abstraction/contracts/interfaces/IPaymaster.sol";
 
 
-
+/// @title ERC4337HelloWorld
+/// @notice This contract implements a ERC4337 compliant smart account with a simple greeting function.
+/// @dev This contract supports both self-paying(by the user) or sponsored UserOperations via paymaster.
 contract ERC4337HelloWorld  is IAccount, Ownable{ 
 
 /*//////////////////////////////////////////////////////////////
@@ -33,10 +36,9 @@ error HelloworldAccount__NonceMismatch();
 //////////////////////////////////////////////////////////////*/
 /// @notice The EntryPoint contract address.
 IEntryPoint private immutable i_entryPoint; 
-
-/// @notice This will keep track of the nonce of the account.
+/// @notice This will keep track of the current nonce of the account, used to prevent replay attacks
 uint256 public nonce;
-/// @notice This will hold the current nonce fetched from the EntryPoint contract.  
+/// @notice This will hold the current nonce fetched from the EntryPoint contract during the last validation.  
 uint256 public fetchedNonce; 
 /// @notice The greeting message.
 string public greet = "Hello World"; 
@@ -89,10 +91,12 @@ function execute (address dest, uint256 value, bytes calldata functionData) exte
 
 
 /// @notice Validate the user operation and pay the prefund if necessary (in the case where there is no paymaster).
-/// @dev This function is called by the EntryPoint contract to validate the user operation and pay the prefund if necessary.
+/// @dev This function is called by the EntryPoint contract to validate the user operation
+/// It handles both self-paying UserOps or via paymaster .
 /// @param userOp The user operation to validate. 
 /// @param userOpHash The hash of the user operation. 
 /// @param missingAccountFunds The amount of funds missing in the account. 
+/// @return validationData SIG_VALIDATION_SUCCESS if the user operation is valid, SIG_VALIDATION_FAILED otherwise.
 function validateUserOp(PackedUserOperation calldata userOp, bytes32 userOpHash, uint256 missingAccountFunds) 
 external requireFromEntryPoint returns (uint256 validationData)
 {
@@ -101,10 +105,28 @@ external requireFromEntryPoint returns (uint256 validationData)
         return validationData; 
     }
 
-    // Validate the nonce of the user operation. 
+    /// @notice Validate the nonce of the user operation. 
     _validateNonce(userOp); 
 
-    _payPrefund(missingAccountFunds); 
+
+    ///@notice check if the paymaster is being used 
+    if(userOp.paymasterAndData.length > 0) { 
+        // Extract paymaster address (first 20 bytes of paymasterAndData) 
+        address paymaster = address(bytes20(userOp.paymasterAndData[:20])); 
+        // Call the paymaster 's validatePaymasterUserOp function
+        (bytes memory context, uint256 paymasterValidationData) = 
+        IPaymaster(paymaster).validatePaymasterUserOp(userOp, userOpHash, missingAccountFunds);
+    
+        /// @dev If the paymaster validation fails, return its validationdata(the paymasterValidationData)
+        if(paymasterValidationData != SIG_VALIDATION_SUCCESS){ 
+            return paymasterValidationData; 
+        }
+        /// @dev Paymaster handles the prefund payment, so we do not need to call _payPrefund.
+    } else {
+        _payPrefund(missingAccountFunds);    
+    
+    }
+
     return SIG_VALIDATION_SUCCESS; 
 }
 
@@ -137,8 +159,8 @@ internal  view returns (uint256 validationData)
     return SIG_VALIDATION_SUCCESS;
 } 
 
-/// @notice Helper function to pay the prefund to the account.
-/// @dev This function sends the missing account funds to the account.
+/// @notice Helper function to pay the prefund to the account (in case we do not use a paymaster).
+/// @dev This function sends the missing account funds to the EntryPoint.
 /// @param missingAccountFunds The amount of funds missing in the account.
 
 function _payPrefund(uint256 missingAccountFunds) internal { 
@@ -149,9 +171,10 @@ function _payPrefund(uint256 missingAccountFunds) internal {
 }
 
 /// @notice Validate the nonce of the user operation. 
-/// @dev compares the nonce in the userOperation witht he currentNonce from the EntryPoint contract. 
+/// @dev compares the nonce in the userOperation with the currentNonce from the EntryPoint contract. 
+/// Reverts if nonce does not match. 
 /// @param userOp The user operation to validate.
-/// @return  uint256 SIG_VALIDATION_SUCCESS if the nonce is valid, SIG_VALIDATION_FAILED otherwise. 
+/// @return  uint256 SIG_VALIDATION_SUCCESS if the nonce is valid.
 function _validateNonce(PackedUserOperation calldata userOp) internal view returns (uint256) {
     // Get the fetched  nonce for this userOp from the EntryPoint contract
     uint256 fetchedNonce = INonceManager(address(i_entryPoint)).getNonce(address(this), uint192(userOp.nonce));
