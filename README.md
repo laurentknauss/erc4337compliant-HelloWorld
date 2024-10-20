@@ -1,8 +1,8 @@
 
-#erc4337compliant-HelloWorld
+**ERC4337-compliant-HelloWorld with paymaster option**
 
--coding the basic AA.sol file
--deploy on Sepolia ETH with solidity scripts 
--building the typescript client 
+**Basic erc4337 compliant smart contract aka smart account aka account abstraction smart contract**
 
-#work in progress...
+
+
+
